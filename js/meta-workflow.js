@@ -1,79 +1,97 @@
-// meta-workflow.js
-
-import { getDateRange } from "./utils-date.js";
-import { generateMetaInRange } from "./logic_meta_local.js";
-import { generateServerMeta } from "./logic_meta_server.js";
+// File: js/meta-workflow.js
 
 /**
- * Fragt Schreib-/Leseberechtigung für ein Verzeichnis ab und fordert sie ggf. an.
- * @param {FileSystemDirectoryHandle} dirHandle
+ * Initialisiert den Meta-Workflow. Registriert initMetaWorkflow global.
+ * Beim Klick auf den Button (#btn-gen-meta) wird das Backend per AJAX
+ * (meta_generator.php) aufgerufen und anschließend pollt man get_meta_log.php.
  */
-async function ensureWritePermission(dirHandle) {
-  const opts = { mode: "readwrite" };
-  if ((await dirHandle.queryPermission(opts)) === "granted") return;
-  if ((await dirHandle.requestPermission(opts)) === "granted") return;
-  throw new Error("Berechtigung für das Zielverzeichnis verweigert.");
-}
-
-/**
- * Initialisiert den „Metadaten erstellen“-Workflow.
- */
-export function initMetaWorkflow({
-  btnGenMeta,
-  btnSortFiles,
-  fromInput,
-  toInput,
-  logMessage,
-  getSrcDirHandle,
-  getDestDirHandle,
-}) {
-  btnGenMeta.addEventListener("click", async () => {
-    console.debug("🟡 [DEBUG] Metadaten-Erstellung gestartet");
-
-    // 1. Datum prüfen
-    if (!fromInput.value || !toInput.value) {
-      alert("Bitte sowohl Start- als auch End-Datum wählen.");
-      console.warn("⚠️ [DEBUG] Datum fehlt");
-      return;
+(function () {
+  function initMetaWorkflow({
+    btnGenMeta,
+    btnSortFiles,
+    fromInput,
+    toInput,
+    logMessage,
+    getSrcDirHandle,
+    getDestDirHandle,
+  }) {
+    // 1) Klick auf "Metadaten generieren"
+    if (btnGenMeta) {
+      btnGenMeta.addEventListener("click", (e) => {
+        e.preventDefault();
+        startMetaWorkflow();
+      });
     }
 
-    // 2. Quelle prüfen
-    const src = getSrcDirHandle();
-    if (!src) {
-      alert("Bitte Quellordner auswählen.");
-      console.warn("⚠️ [DEBUG] Quelle fehlt");
-      return;
+    // 2) Klick auf "Dateien sortieren" (falls benötigt)
+    if (btnSortFiles) {
+      btnSortFiles.addEventListener("click", (e) => {
+        e.preventDefault();
+        // Hier kannst du deine Sortier-Logik starten, z.B. ein anderes PHP aufrufen
+        console.log("Datei-Sortier-Workflow starten");
+      });
     }
 
-    // 3. Ziel prüfen und Berechtigung
-    const dest = getDestDirHandle();
-    try {
-      await ensureWritePermission(dest);
-    } catch (err) {
-      alert(err.message);
-      return;
+    // 3) Funktion, die das Meta-Generator-Skript aufruft
+    function startMetaWorkflow() {
+      console.log("Meta-Workflow gestartet");
+      fetch("/v/packages/file-sort/meta_generator.php", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // Optional kannst du hier z.B. die Datumsfilter aus fromInput/toInput mitschicken:
+          from: fromInput ? fromInput.value : null,
+          to: toInput ? toInput.value : null,
+          // Und ggf. Source/Target-Ordner, falls File-System-Access genutzt wird
+          // srcDir: getSrcDirHandle ? await getSrcDirHandle() : null,
+          // destDir: getDestDirHandle ? await getDestDirHandle() : null,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.status === "success") {
+            console.log("Meta-Generator gestartet:", data.message);
+            // Polling starten, um den Log in #meta-log-output anzuzeigen
+            pollMetaLog();
+          } else {
+            console.error(
+              "Fehler beim Starten des Meta-Generators:",
+              data.message
+            );
+          }
+        })
+        .catch((err) => console.error("Fetch-Fehler meta_generator:", err));
     }
 
-    // 4. Metadaten generieren
-    try {
-      const files = getDateRange(fromInput.value, toInput.value);
-      let count;
-      if (src.kind === "local") {
-        count = await generateMetaInRange(src.handle, files, dest.handle);
-      } else {
-        count = await generateServerMeta(src.handle, files);
-      }
-
-      if (count > 0) {
-        logMessage(`✅ meta.txt erstellt (${count} Dateien)`);
-        btnSortFiles.disabled = false;
-      } else {
-        logMessage(`⚠️ Keine Dateien im Zeitraum gefunden.`);
-        btnSortFiles.disabled = true;
-      }
-    } catch (err) {
-      console.error("❌ [DEBUG] Fehler beim Erstellen der Metadaten:", err);
-      alert("Fehler beim Erstellen der Metadaten: " + err.message);
+    // 4) Polling-Funktion: Liest alle 2 Sekunden das Backend-Log aus
+    function pollMetaLog() {
+      const interval = setInterval(() => {
+        fetch("/v/packages/file-sort/get_meta_log.php")
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.status === "success") {
+              // Hier nehmen wir an, dass es ein <pre id="meta-log-output"> gibt
+              const logContainer = document.getElementById("meta-log-output");
+              if (logContainer) {
+                logContainer.textContent = data.log;
+              }
+              // Optional: Erkennungslogik, ob der Workflow abgeschlossen ist,
+              // damit clearInterval(interval) ausgeführt wird.
+              // Z.B. wenn data.log eine bestimmte Nachricht enthält.
+            } else if (
+              data.status === "error" &&
+              data.message === "Kein Log gefunden"
+            ) {
+              // Log existiert noch nicht → kein Fehler anzeigen
+            } else {
+              console.error("Fehler beim Abrufen des Meta-Logs:", data.message);
+            }
+          })
+          .catch((err) => console.error("Fetch-Fehler get_meta_log:", err));
+      }, 2000);
     }
-  });
-}
+  }
+
+  // Globale Registrierung
+  window.initMetaWorkflow = initMetaWorkflow;
+})();

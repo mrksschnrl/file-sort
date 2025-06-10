@@ -1,157 +1,112 @@
-// File: /v/packages/file-sort/js/copy-workflow.js
-
-import { getDateRange } from "./utils-date.js";
-import { copyAndVerifyFile, moveIfVerified } from "./logic_file_ops.js";
-
-/** Recursiver Dateiwalk über Unterordner */
-async function* walkFiles(dirHandle, prefix = "") {
-  for await (const [name, handle] of dirHandle.entries()) {
-    const rel = prefix ? `${prefix}/${name}` : name;
-    if (handle.kind === "file") {
-      yield [rel, handle];
-    } else if (handle.kind === "directory") {
-      yield* walkFiles(handle, rel);
-    }
-  }
-}
+// File: js/copy-workflow.js
 
 /**
- * Führt Tasks mit maximal `limit` gleichzeitig aus.
- * @param {Function[]} tasks – Array async-Funktionen ohne Argumente
- * @param {number} limit
+ * Startet den Copy-Workflow, der alle Dateien im Datumsbereich aus srcHandle
+ * in destHandle kopiert oder verschiebt. Arbeitet parallel mit Max-Limit.
+ * Registriert sich global unter window.startCopyWorkflow.
  */
-async function parallelLimit(tasks, limit = 6) {
-  const executing = new Set();
-  const results = [];
-  for (const task of tasks) {
-    const p = Promise.resolve().then(() => task());
-    results.push(p);
-    executing.add(p);
-    const clean = () => executing.delete(p);
-    p.then(clean, clean);
-    if (executing.size >= limit) {
-      await Promise.race(executing);
+(function () {
+  // 1) Hilfsfunktion: rekursiver Dateiwalk
+  async function* walkFiles(dirHandle, prefix = "") {
+    for await (const [name, handle] of dirHandle.entries()) {
+      const rel = prefix ? `${prefix}/${name}` : name;
+      if (handle.kind === "file") {
+        yield [rel, handle];
+      } else if (handle.kind === "directory") {
+        yield* walkFiles(handle, rel);
+      }
     }
   }
-  return Promise.all(results);
-}
 
-/**
- * Initialisiert Copy-/Move-/Upload-Workflow mit sichtbarem Fortschritt.
- */
-export function initCopyWorkflow({
-  btnSortFiles,
-  fromInput,
-  toInput,
-  modeSelect,
-  toggleFileLog,
-  fileListUI,
-  copyProgressUI,
-  progressBar,
-  logMessage,
-  getSrcDirHandle,
-  getDestDirHandle,
-  useServerOutput,
-  serverPath,
-  uploadToServer,
-}) {
-  btnSortFiles.addEventListener("click", async () => {
-    const src = getSrcDirHandle();
-    const dest = getDestDirHandle();
-    if (!src || !dest) {
-      alert("Bitte Quell- und Zielordner wählen.");
+  // 2) Hilfsfunktion: führt mehrere Tasks parallel mit maximal `limit` gleichzeitig aus
+  async function parallelLimit(tasks, limit) {
+    const executing = new Set();
+    for (const task of tasks) {
+      const p = Promise.resolve().then(() => task());
+      executing.add(p);
+      p.then(() => executing.delete(p)).catch(() => executing.delete(p));
+      if (executing.size >= limit) {
+        await Promise.race(executing);
+      }
+    }
+    await Promise.all(executing);
+  }
+
+  // 3) Hilfsfunktion: getDateRange holen wir nun aus window.getDateRange (aus js/utils-date.js)
+  //    copyAndVerifyFile und moveIfVerified holen wir aus window.copyAndVerifyFile / window.moveIfVerified
+
+  /**
+   * Führt den Copy/Move-Workflow aus:
+   *   – srcHandle: FileSystemDirectoryHandle (Quelle)
+   *   – destHandle: FileSystemDirectoryHandle (Ziel)
+   *   – startDate, endDate: Date-Objekte (nur Dateien im Zeitraum)
+   *   – mode: "copy" oder "move"
+   *   – logMessage: Funktion, um Meldungen ins Log zu schreiben
+   */
+  async function startCopyWorkflow(
+    srcHandle,
+    destHandle,
+    startDate,
+    endDate,
+    mode,
+    logMessage
+  ) {
+    if (!srcHandle || !destHandle) {
+      logMessage("⚠️ Quell- oder Zielordner fehlt.");
+      return;
+    }
+    if (!(startDate instanceof Date) || !(endDate instanceof Date)) {
+      logMessage("⚠️ Ungültiges Datum.");
       return;
     }
 
-    btnSortFiles.disabled = true;
-    fileListUI.innerHTML = "";
-    copyProgressUI.innerHTML = "";
-    logMessage(
-      `🚀 Start ${modeSelect.value === "move" ? "Verschieben" : "Kopieren"}`
-    );
+    // 3.1) Erzeuge Array aller Datumsstrings im Format "YYYYMMDD"
+    const startRaw = startDate.toISOString().slice(0, 10).replace(/-/g, "");
+    const endRaw = endDate.toISOString().slice(0, 10).replace(/-/g, "");
+    const dateRange = window.getDateRange(startRaw, endRaw);
 
-    // 1. Datum-Intervalle ermitteln
-    let startDate, endDate;
-    try {
-      ({ startDate, endDate } = getDateRange("range", {
-        rangeFrom: fromInput.value,
-        rangeTo: toInput.value,
-      }));
-    } catch (err) {
-      alert(err.message);
-      btnSortFiles.disabled = false;
-      return;
-    }
-    const startMs = startDate.getTime();
-    const endMs = endDate.getTime();
-
-    // 2. Dateien rekursiv sammeln und nach Datum filtern
-    const files = [];
-    for await (const [relPath, handle] of walkFiles(src)) {
-      const file = await handle.getFile();
-      if (file.lastModified >= startMs && file.lastModified <= endMs) {
-        files.push({ relPath, handle });
-      }
-    }
-
-    const total = files.length;
-    progressBar.max = total;
-    progressBar.value = 0;
-
-    // 3. Progress-Info-Label neben der Bar
-    let progressInfo = document.getElementById("progress-info");
-    if (!progressInfo) {
-      progressInfo = document.createElement("div");
-      progressInfo.id = "progress-info";
-      progressBar.parentNode.insertBefore(
-        progressInfo,
-        progressBar.nextSibling
-      );
-    }
-    progressInfo.textContent = `0 / ${total}`;
-
-    // 4. Tasks für Parallelisierung aufbauen
-    const tasks = files.map(({ relPath, handle }) => async () => {
-      // reiner Dateiname ohne Verzeichnisanteile
-      const baseName = relPath.split(/[/\\]/).pop();
-
-      // a) Logging im UI
-      if (toggleFileLog.checked) {
-        const li = document.createElement("li");
-        li.textContent = relPath;
-        copyProgressUI.appendChild(li);
-      }
-
-      // b) Copy/Move/Upload
+    // 3.2) Dateien sammeln, die ins Datumfenster fallen
+    const tasks = [];
+    for await (const [relPath, handle] of walkFiles(srcHandle)) {
       try {
-        if (useServerOutput) {
-          const file = await handle.getFile();
-          await uploadToServer(file, serverPath);
-          logMessage(`🌐 Hochgeladen: ${relPath}`);
-          if (modeSelect.value === "move") {
-            logMessage("⚠️ Verschieben im Servermodus nicht unterstützt");
-          }
-        } else if (modeSelect.value === "move") {
-          await moveIfVerified(handle, src, dest, baseName);
-          logMessage(`🚚 Verschoben (Quelldatei blieb): ${baseName}`);
-        } else {
-          await copyAndVerifyFile(handle, dest, baseName);
-          logMessage(`📄 Kopiert: ${baseName}`);
+        const file = await handle.getFile();
+        const lastModRaw = new Date(file.lastModified)
+          .toISOString()
+          .slice(0, 10)
+          .replace(/-/g, "");
+        // Wenn lastModRaw innerhalb von dateRange ist, Task anlegen
+        if (dateRange.includes(lastModRaw)) {
+          tasks.push(async () => {
+            if (mode === "move") {
+              await window.moveIfVerified(
+                handle,
+                srcHandle,
+                destHandle,
+                relPath
+              );
+              logMessage(`🚚 Verschoben: ${relPath}`);
+            } else {
+              await window.copyAndVerifyFile(handle, destHandle, relPath);
+              logMessage(`📄 Kopiert: ${relPath}`);
+            }
+          });
         }
       } catch (err) {
-        console.error(err);
-        logMessage(`❌ Fehler bei ${baseName}: ${err.message}`);
+        logMessage(`❌ Fehler beim Einlesen von ${relPath}: ${err.message}`);
       }
+    }
 
-      // c) Fortschritt aktualisieren
-      progressBar.value++;
-      progressInfo.textContent = `${progressBar.value} / ${total}`;
-    });
+    if (tasks.length === 0) {
+      logMessage("⚠️ Keine Dateien im gewählten Zeitraum gefunden.");
+      return;
+    }
 
-    // 5. Tasks ausführen mit Limit
+    // 3.3) Paralleles Ausführen der Tasks (maximal 6 gleichzeitig oder nach Bedarf anpassen)
     await parallelLimit(tasks, 6);
 
-    logMessage(`🏁 Vorgang abgeschlossen (${total} Dateien)`);
-    btnSortFiles.disabled = false;
-  });
-}
+    logMessage(`🏁 Copy-Workflow abgeschlossen (${tasks.length} Dateien).`);
+  }
+
+  // 4) Globale Registrierung
+  window.startCopyWorkflow = startCopyWorkflow;
+})();

@@ -1,55 +1,40 @@
-// File: /v/packages/file-sort/js/utils-date.js
+// File: js/utils-date.js
+
 /**
- * Liefert für verschiedene Modi immer ein { startDate, endDate }-Objekt zurück.
+ * Hilfsfunktionen rund um Datummanipulation.
+ * Registriert window.getDateRange, sodass andere Skripte es direkt verwenden können.
  */
-export function getDateRange(mode, inputs = {}) {
-  const today = new Date();
-  let startDate, endDate;
-
-  switch (mode) {
-    case "today":
-      startDate = new Date(today);
-      endDate = new Date(today);
-      break;
-
-    case "yesterday":
-      startDate = new Date(today);
-      startDate.setDate(startDate.getDate() - 1);
-      endDate = new Date(startDate);
-      break;
-
-    case "last7":
-      endDate = new Date(today);
-      startDate = new Date(today);
-      startDate.setDate(startDate.getDate() - 6);
-      break;
-
-    case "specific":
-      if (!inputs.specificDay) {
-        throw new Error(
-          'Für "Bestimmter Tag" muss specificDay angegeben sein.'
-        );
-      }
-      startDate = new Date(inputs.specificDay);
-      endDate = new Date(inputs.specificDay);
-      break;
-
-    case "range":
-      if (!inputs.rangeFrom || !inputs.rangeTo) {
-        throw new Error(
-          'Für "Von–Bis" müssen rangeFrom und rangeTo angegeben sein.'
-        );
-      }
-      startDate = new Date(inputs.rangeFrom);
-      endDate = new Date(inputs.rangeTo);
-      break;
-
-    default:
-      throw new Error(`Unbekannter Modus: ${mode}`);
+(function () {
+  /**
+   * Erzeugt ein Array von Datumsstrings (im Format YYYYMMDD) von startRaw bis endRaw (inklusive).
+   * @param {string} startRaw – "YYYYMMDD"
+   * @param {string} endRaw   – "YYYYMMDD"
+   * @returns {string[]} Array mit Datumsstrings (z.B. ["20250101", "20250102", …])
+   */
+  function getDateRange(startRaw, endRaw) {
+    // startRaw und endRaw müssen jeweils 8 Ziffern haben: "YYYYMMDD"
+    const start = new Date(
+      parseInt(startRaw.slice(0, 4), 10),
+      parseInt(startRaw.slice(4, 6), 10) - 1,
+      parseInt(startRaw.slice(6, 8), 10)
+    );
+    const end = new Date(
+      parseInt(endRaw.slice(0, 4), 10),
+      parseInt(endRaw.slice(4, 6), 10) - 1,
+      parseInt(endRaw.slice(6, 8), 10)
+    );
+    const dates = [];
+    let curr = new Date(start);
+    while (curr <= end) {
+      const yyyy = curr.getFullYear().toString();
+      const mm = (curr.getMonth() + 1).toString().padStart(2, "0");
+      const dd = curr.getDate().toString().padStart(2, "0");
+      dates.push(`${yyyy}${mm}${dd}`);
+      curr.setDate(curr.getDate() + 1);
+    }
+    return dates;
   }
 
-  startDate.setHours(0, 0, 0, 0);
-  endDate.setHours(23, 59, 59, 999);
-
-  return { startDate, endDate };
-}
+  // Globale Registrierung
+  window.getDateRange = getDateRange;
+})();

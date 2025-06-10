@@ -1,49 +1,70 @@
 <?php
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
 session_start();
-header('Content-Type: application/json');
+// Authentifizierungsprüfung: Nur eingeloggte Benutzer dürfen hochladen
+if (!isset($_SESSION['username']) || $_SESSION['username'] === '') {
+    http_response_code(401);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode(['status' => 'error', 'message' => 'Nicht angemeldet']);
+    exit;
+}
+$username = $_SESSION['username'];
 
-// Nur POST erlaubt
+// Nur POST-Requests erlauben
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
+    header('Content-Type: application/json; charset=UTF-8');
     echo json_encode(['status' => 'error', 'message' => 'Nur POST erlaubt']);
     exit;
 }
 
-// Prüfe Benutzername
-if (!isset($_POST['username']) || !preg_match('/^[a-zA-Z0-9_-]+$/', $_POST['username'])) {
-    http_response_code(400);
-    echo json_encode(['status' => 'error', 'message' => 'Ungültiger Benutzername']);
-    exit;
-}
-
-$username = $_POST['username'];
-$baseDir = __DIR__ . "/../users/accounts/$username/uploads";
-
-// Stelle sicher, dass der Upload-Ordner existiert
+// Basis-Verzeichnis: /var/www/html/v/users/accounts/<username>/uploads
+$baseDir = __DIR__ . "/../../users/accounts/$username/uploads";
 if (!is_dir($baseDir)) {
-    if (!mkdir($baseDir, 0775, true)) {
-        http_response_code(500);
-        echo json_encode(['status' => 'error', 'message' => 'Zielverzeichnis konnte nicht erstellt werden']);
-        exit;
-    }
+    mkdir($baseDir, 0755, true);
 }
 
-// Datei prüfen
+// Prüfen, ob eine Datei übergeben wurde
 if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
     http_response_code(400);
-    echo json_encode(['status' => 'error', 'message' => 'Fehler beim Hochladen']);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode(['status' => 'error', 'message' => 'Fehler beim Datei-Upload']);
     exit;
 }
 
-$filename = basename($_FILES['file']['name']);
-$targetPath = "$baseDir/$filename";
+// Optional: Dateigrößen-Limit prüfen (z. B. max. 20 MB)
+// if ($_FILES['file']['size'] > 20 * 1024 * 1024) {
+//     http_response_code(413);
+//     header('Content-Type: application/json; charset=UTF-8');
+//     echo json_encode(['status' => 'error', 'message' => 'Datei zu groß (max. 20 MB)']);
+//     exit;
+// }
 
-// Datei speichern
-if (move_uploaded_file($_FILES['file']['tmp_name'], $targetPath)) {
-    echo json_encode(['status' => 'success', 'path' => $targetPath]);
-} else {
+// Optional: Dateityp-Whitelist (z. B. Nur Bilder/Dokumente)
+// $allowedExt = ['jpg','jpeg','png','pdf','txt','mp3'];
+// $filename_safe = basename($_FILES['file']['name']);
+// $ext = strtolower(pathinfo($filename_safe, PATHINFO_EXTENSION));
+// if (!in_array($ext, $allowedExt)) {
+//     http_response_code(415);
+//     header('Content-Type: application/json; charset=UTF-8');
+//     echo json_encode(['status' => 'error', 'message' => 'Dateityp nicht erlaubt']);
+//     exit;
+// }
+
+$filename   = basename($_FILES['file']['name']);
+$destination = "$baseDir/$filename";
+
+// Verschiebe die Datei in das Upload-Verzeichnis des eingeloggten Nutzers
+if (!move_uploaded_file($_FILES['file']['tmp_name'], $destination)) {
     http_response_code(500);
-    echo json_encode(['status' => 'error', 'message' => 'Fehler beim Speichern']);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode(['status' => 'error', 'message' => 'Konnte Datei nicht speichern']);
+    exit;
 }
+
+// Erfolgreiche Antwort (Pfad relativ zur Web-Root)
+http_response_code(200);
+header('Content-Type: application/json; charset=UTF-8');
+echo json_encode([
+    'status' => 'success',
+    'path'   => "/v/users/accounts/$username/uploads/$filename"
+]);

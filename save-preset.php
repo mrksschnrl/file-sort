@@ -1,36 +1,46 @@
 <?php
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
 session_start();
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=UTF-8');
+// Authentifizierungsprüfung: Nur eingeloggte Benutzer dürfen Presets speichern
+if (!isset($_SESSION['username']) || $_SESSION['username'] === '') {
+    http_response_code(401);
+    echo json_encode(['status' => 'error', 'message' => 'Nicht angemeldet']);
+    exit;
+}
+$username = $_SESSION['username'];
 
-$data = json_decode(file_get_contents("php://input"), true);
-
-if (!isset($data['username'], $data['presetname'], $data['content'])) {
-    http_response_code(400);
-    echo json_encode(["status" => "error", "message" => "Ungültige Daten"]);
+// Nur POST-Requests sind erlaubt
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    echo json_encode(['status' => 'error', 'message' => 'Nur POST erlaubt']);
     exit;
 }
 
-$username   = basename($data['username']);
-$presetname = basename($data['presetname']);
-$content    = $data['content'];
+// Preset-Daten aus dem Request
+$presetName = trim($_POST['presetName'] ?? '');
+$presetData = $_POST['presetData'] ?? '';
 
-$baseDir = __DIR__ . "/../users/accounts/$username/presets";
-
-if (!is_dir($baseDir)) {
-    if (!mkdir($baseDir, 0775, true)) {
-        http_response_code(500);
-        echo json_encode(["status" => "error", "message" => "Verzeichnis konnte nicht erstellt werden"]);
-        exit;
-    }
+// Nur alphanumerische Preset-Namen (+ Unterstrich, Bindestrich) erlauben
+if (!preg_match('/^[A-Za-z0-9_-]+$/', $presetName)) {
+    http_response_code(400);
+    echo json_encode(['status' => 'error', 'message' => 'Ungültiger Preset-Name']);
+    exit;
 }
 
-$fullPath = "$baseDir/$presetname.json";
+// Verzeichnis: /var/www/html/v/users/accounts/<username>/presets
+$presetDir = __DIR__ . "/../../users/accounts/$username/presets";
+if (!is_dir($presetDir)) {
+    mkdir($presetDir, 0755, true);
+}
 
-if (file_put_contents($fullPath, $content) !== false) {
-    echo json_encode(["status" => "success"]);
-} else {
+// JSON-Daten in Datei schreiben
+$filePath = "$presetDir/$presetName.json";
+if (false === file_put_contents($filePath, $presetData)) {
     http_response_code(500);
-    echo json_encode(["status" => "error", "message" => "Fehler beim Schreiben"]);
+    echo json_encode(['status' => 'error', 'message' => 'Konnte Preset nicht speichern']);
+    exit;
 }
+
+// Erfolgreiche Rückmeldung
+http_response_code(200);
+echo json_encode(['status' => 'success', 'message' => 'Preset gespeichert']);
